@@ -1,5 +1,4 @@
 import sqlite3
-from pathlib import Path
 from config.settings import MEMORY_DIR
 
 DB_PATH = MEMORY_DIR / "decisionops.db"
@@ -20,7 +19,8 @@ def init_db():
             objective TEXT NOT NULL,
             status TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            report TEXT DEFAULT ''
+            report TEXT DEFAULT '',
+            error_message TEXT DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS findings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,13 +30,30 @@ def init_db():
             created_at TEXT NOT NULL
         );
         """)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(decisions)").fetchall()}
+        if "error_message" not in columns:
+            conn.execute("ALTER TABLE decisions ADD COLUMN error_message TEXT DEFAULT ''")
+        conn.commit()
 
 
-def save_decision(decision_id, title, objective, status, created_at, report=""):
+def save_decision(decision_id, title, objective, status, created_at, report="", error_message=""):
     with get_connection() as conn:
         conn.execute("""INSERT OR REPLACE INTO decisions
-            (decision_id,title,objective,status,created_at,report)
-            VALUES (?,?,?,?,?,?)""", (decision_id, title, objective, status, created_at, report))
+            (decision_id,title,objective,status,created_at,report,error_message)
+            VALUES (?,?,?,?,?,?,?)""", (decision_id, title, objective, status, created_at, report, error_message))
+        conn.commit()
+
+
+def update_decision_status(decision_id, status, report=None, error_message=None):
+    with get_connection() as conn:
+        if report is None and error_message is None:
+            conn.execute("UPDATE decisions SET status=? WHERE decision_id=?", (status, decision_id))
+        elif report is None:
+            conn.execute("UPDATE decisions SET status=?, error_message=? WHERE decision_id=?", (status, error_message or "", decision_id))
+        elif error_message is None:
+            conn.execute("UPDATE decisions SET status=?, report=? WHERE decision_id=?", (status, report, decision_id))
+        else:
+            conn.execute("UPDATE decisions SET status=?, report=?, error_message=? WHERE decision_id=?", (status, report, error_message or "", decision_id))
         conn.commit()
 
 
