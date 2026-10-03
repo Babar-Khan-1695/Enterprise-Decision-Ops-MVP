@@ -1,1 +1,8 @@
+SAMPLE COMPANY POLICY — DEMO DATA
 
+Capital expenditure above PKR 25,000,000 requires executive finance approval.
+Investment proposals should include financial assumptions, operational impact, major risks and implementation requirements.
+Decision owners should document the evidence used for material recommendations.
+High-risk operational changes require management review before execution.
+
+This file is demo content only and is not legal, financial or regulatory advice.

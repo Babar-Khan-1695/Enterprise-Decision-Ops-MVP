@@ -1,0 +1,6 @@
+metric,value,unit
+initial_investment,40000000,PKR
+annual_operating_cost,11000000,PKR
+expected_annual_benefit,18000000,PKR
+minimum_roi,15,percent
+payback_target,4,years
