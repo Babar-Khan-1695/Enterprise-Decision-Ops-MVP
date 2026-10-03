@@ -1,4 +1,14 @@
 import os
+
+# CrewAI 1.15.x can inject the provider-specific `cache_breakpoint`
+# field into messages sent through the LiteLLM path. Groq rejects that
+# field, so disable the marker before creating any LLM instances.
+try:
+    import crewai.llms.cache as _crewai_cache
+    _crewai_cache.mark_cache_breakpoint = lambda msg: msg
+except Exception:
+    pass
+
 from crewai import Agent, LLM
 from config.settings import GROQ_MODEL
 
