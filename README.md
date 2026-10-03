@@ -55,3 +55,7 @@ Upload the repository to GitHub, select `app.py` as the main file, and add `GROQ
 ## Important
 
 The application uses local SQLite and a local FAISS index for this MVP. Streamlit Cloud local storage is not guaranteed across rebuilds/redeployments. The Groq API key is never stored in the repository.
+
+
+### Groq reliability settings
+This version uses GPT-OSS 120B with low reasoning effort, compact specialist outputs, sequential execution, and a 25-second pacing delay between agents. This is intentional for organizations with a low TPM limit. If Groq returns a 429/rate-limit response, wait for the reset window before retrying.

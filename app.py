@@ -6,7 +6,7 @@ from config.settings import OUTPUT_DIR, TOP_K
 from config.agent_config import AGENT_NAMES
 from utils.helpers import now_iso
 from tools.decision_tools import new_decision_id
-from memory.database import init_db, save_decision, save_finding, get_decision, update_decision_status
+from memory.database import init_db, save_decision, get_decision, update_decision_status, replace_findings, replace_sources
 from memory.decision_memory import list_decisions
 from rag.vector_store import has_index
 from rag.retriever import retrieve_context
@@ -66,8 +66,8 @@ with st.sidebar:
     st.markdown("## DecisionOps")
     st.caption("Multi-agent enterprise decision intelligence")
     st.divider()
-    page = st.radio("Workspace", pages, index=pages.index(default_page))
-    if page != default_page:
+    page = st.radio("Workspace", pages, index=pages.index(default_page), key="workspace_nav")
+    if page != "New Decision" or not st.session_state.get("run_analysis"):
         st.session_state["workspace_page"] = page
     st.divider()
     st.caption("Use System Health for technical/runtime status.")
@@ -107,6 +107,7 @@ elif page == "Decision Room":
             findings,
             row["status"],
             row["error_message"],
+            row,
         )
 
 
@@ -132,7 +133,7 @@ def run_pending_analysis():
     st.session_state["analysis_status"] = "Analyzing"
     st.session_state["analysis_error"] = ""
     update_agent_ui(0)
-    save_decision(decision_id, decision["title"], decision["objective"], "Analyzing", created)
+    save_decision(decision_id, decision["title"], decision["objective"], "Analyzing", created, "", "", "Pending Executive Review", decision.get("decision_type",""), decision.get("constraints",""))
 
     st.markdown("---")
     st.markdown(f"### Live Decision Processing · `{decision_id}`")
@@ -177,7 +178,7 @@ def run_pending_analysis():
             idx = min(completed["count"], len(AGENT_NAMES) - 1)
             output = getattr(getattr(task, "output", None), "raw", "") or str(getattr(task, "output", ""))
             agent_name = AGENT_NAMES[idx]
-            save_finding(decision_id, agent_name, output, now_iso())
+            # Live callback is for UI; final outputs are persisted after CrewAI finishes.
             completed["count"] += 1
             next_agent = AGENT_NAMES[completed["count"]] if completed["count"] < len(AGENT_NAMES) else None
             update_agent_ui(completed["count"])
@@ -185,17 +186,39 @@ def run_pending_analysis():
             pct = min(95, 10 + int((completed["count"] / len(AGENT_NAMES)) * 85))
             progress.progress(pct, text=f"Completed {agent_name}." + (f" Starting {next_agent}…" if next_agent else " Final brief complete."))
 
-        report, outputs = run_decision(decision, evidence, on_task_complete=on_task_complete)
-        progress.progress(98, text="Saving executive decision and report…")
+        report, outputs, web_sources = run_decision(decision, evidence, on_task_complete=on_task_complete)
+        progress.progress(98, text="Saving agent findings, sources and executive report…")
 
-        # The callback normally saves each finding. This fallback covers a
-        # CrewAI implementation that does not invoke task_callback.
-        saved_count = completed["count"]
-        if saved_count == 0:
-            for name, output in zip(AGENT_NAMES, outputs):
-                save_finding(decision_id, name, output, now_iso())
+        # Persist the authoritative post-Crew outputs once, avoiding callback
+        # duplication and fixing empty Decision Table / Agent Findings records.
+        replace_findings(decision_id, list(zip(AGENT_NAMES, outputs)), now_iso())
+        source_rows = [{
+            "source_name": "Enterprise evidence / RAG",
+            "source_type": "Internal",
+            "details": "Evidence retrieved from the enterprise knowledge base for this decision."
+        }]
+        source_rows += [{
+            "source_name": s.get("title", "Web source"),
+            "source_type": "External Web",
+            "url": s.get("url", ""),
+            "accessed_at": s.get("accessed_at", ""),
+            "details": s.get("snippet", "External research source used by the decision workflow.")
+        } for s in web_sources if s.get("url")]
+        replace_sources(decision_id, source_rows)
 
-        save_decision(decision_id, decision["title"], decision["objective"], "Completed", created, report, "")
+        report += "\n\n## Sources & Evidence\n\n"
+        report += "**Internal evidence:** Enterprise evidence retrieved through the RAG knowledge base.\n\n"
+        if web_sources:
+            report += "**External web research:**\n"
+            for i, s in enumerate(web_sources, 1):
+                report += f"- [WEB {i}] {s.get('title','Web source')} — {s.get('url','')} (accessed {s.get('accessed_at','')})\n"
+        else:
+            report += "**External web research:** No usable external web sources were returned.\n"
+
+        update_decision_status(
+            decision_id, status="Completed", report=report,
+            error_message="", executive_status="Pending Executive Review"
+        )
         (OUTPUT_DIR / f"{decision_id}.md").write_text(report, encoding="utf-8")
         update_agent_ui(len(AGENT_NAMES))
         st.session_state["analysis_status"] = "Completed"
@@ -210,7 +233,7 @@ def run_pending_analysis():
         if is_rate_limit_error(exc):
             wait = rate_limit_wait_seconds(exc)
             error_text = f"Groq token rate limit reached. Please wait about {wait} seconds before retrying.\n\nOriginal error:\n{exc}"
-        save_decision(decision_id, decision["title"], decision["objective"], "Failed", created, "", error_text)
+        update_decision_status(decision_id, status="Failed", report="", error_message=error_text, executive_status="Pending Executive Review")
         st.session_state["analysis_status"] = "Failed"
         st.session_state["analysis_error"] = error_text
         current_index = min(completed["count"], len(AGENT_NAMES) - 1)
