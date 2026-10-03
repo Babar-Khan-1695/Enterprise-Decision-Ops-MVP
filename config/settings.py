@@ -20,10 +20,13 @@ CHUNK_OVERLAP = 120
 # Groq on-demand/free-style limits can be much lower than the model context window.
 # Keep the workflow deliberately paced and compact so multiple specialist agents
 # do not burst requests into the same token-per-minute window.
-AGENT_MAX_TOKENS = 400
-SYNTHESIZER_MAX_TOKENS = 650
+AGENT_MAX_TOKENS = 550
+SYNTHESIZER_MAX_TOKENS = 750
 AGENT_TEMPERATURE = 0.2
-AGENT_DELAY_SECONDS = 15
+# GPT-OSS supports low/medium/high reasoning. Low is used here to avoid
+# spending most of the small TPM budget on hidden reasoning tokens.
+GROQ_REASONING_EFFORT = "low"
+AGENT_DELAY_SECONDS = 25
 MAX_RETRIES = 2
 RETRY_BASE_SECONDS = 30
 MAX_EVIDENCE_CHARS = 3500
