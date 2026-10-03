@@ -13,6 +13,18 @@ for path in [UPLOAD_DIR, SAMPLE_DIR, FAISS_DIR, MEMORY_DIR, OUTPUT_DIR]:
 
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 GROQ_MODEL = "groq/openai/gpt-oss-120b"
-TOP_K = 6
+TOP_K = 4
 CHUNK_SIZE = 900
 CHUNK_OVERLAP = 120
+
+# Groq on-demand/free-style limits can be much lower than the model context window.
+# Keep the workflow deliberately paced and compact so multiple specialist agents
+# do not burst requests into the same token-per-minute window.
+AGENT_MAX_TOKENS = 400
+SYNTHESIZER_MAX_TOKENS = 650
+AGENT_TEMPERATURE = 0.2
+AGENT_DELAY_SECONDS = 15
+MAX_RETRIES = 2
+RETRY_BASE_SECONDS = 30
+MAX_EVIDENCE_CHARS = 3500
+MAX_CONTEXT_CHARS = 3000
