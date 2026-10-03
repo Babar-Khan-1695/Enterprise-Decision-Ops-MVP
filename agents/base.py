@@ -15,6 +15,7 @@ from config.settings import (
     AGENT_TEMPERATURE,
     GROQ_MODEL,
     SYNTHESIZER_MAX_TOKENS,
+    GROQ_REASONING_EFFORT,
 )
 
 
@@ -27,6 +28,8 @@ def get_llm(max_tokens=None):
         api_key=key,
         temperature=AGENT_TEMPERATURE,
         max_tokens=max_tokens or AGENT_MAX_TOKENS,
+        reasoning_effort=GROQ_REASONING_EFFORT,
+        max_retries=2,
     )
 
 
