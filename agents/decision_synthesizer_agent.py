@@ -1,4 +1,11 @@
 from .base import make_agent
+from config.settings import SYNTHESIZER_MAX_TOKENS
+
 
 def create():
-    return make_agent("Executive Decision Synthesizer", "Synthesize all specialist findings into a balanced, evidence-grounded executive decision brief with alternatives, risks, assumptions and next steps.", "You are a senior strategy executive. You do not hide disagreement or uncertainty and you never claim certainty unsupported by evidence.")
+    return make_agent(
+        "Executive Decision Synthesizer",
+        "Synthesize specialist findings into a concise, balanced, evidence-grounded executive decision brief.",
+        "You are a senior strategy executive. Preserve uncertainty and disagreement. Never invent missing facts.",
+        max_tokens=SYNTHESIZER_MAX_TOKENS,
+    )
