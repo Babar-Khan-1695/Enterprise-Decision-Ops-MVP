@@ -4,7 +4,19 @@ A modular multi-agent enterprise decision-intelligence MVP built with Streamlit,
 
 ## What it does
 
-A manager submits a complex business decision. Specialized agents analyze it from research, finance, operations, risk, compliance, scenario and critical-review perspectives. A final synthesizer produces an Executive Decision Brief.
+A manager submits a complex business decision. Nine specialized agents analyze it sequentially from orchestration, research, finance, operations, risk, compliance, scenario and critical-review perspectives. A final synthesizer produces an Executive Decision Brief.
+
+## Runtime behavior
+
+- Agents execute **sequentially**, not concurrently.
+- Specialist outputs are deliberately capped to reduce token consumption.
+- A pacing delay is applied between agent tasks to reduce Groq TPM pressure.
+- CrewAI `max_rpm=4` is used when supported by the installed CrewAI version.
+- Groq rate-limit failures are shown to the user and stored with the failed decision.
+- The New Decision page shows the **currently working agent** and the final Completed/Failed state.
+- The Executive Dashboard focuses on business decisions, not technical system status.
+- Technical status is available in **System Health**.
+- Completed decisions have a Markdown report download button.
 
 ## Stack
 
@@ -40,6 +52,6 @@ streamlit run app.py
 
 Upload the repository to GitHub, select `app.py` as the main file, and add `GROQ_API_KEY` in Streamlit Cloud Secrets.
 
-## Notes
+## Important
 
-The first run downloads the Sentence Transformer embedding model. SQLite is local MVP memory. FAISS is the local knowledge index. Streamlit Cloud local storage is not guaranteed across rebuilds/redeployments.
+The application uses local SQLite and a local FAISS index for this MVP. Streamlit Cloud local storage is not guaranteed across rebuilds/redeployments. The Groq API key is never stored in the repository.
