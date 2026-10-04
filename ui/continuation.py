@@ -1,7 +1,7 @@
 import os
 import time
-
 import streamlit as st
+
 from groq import Groq
 
 from memory.database import (
@@ -9,434 +9,409 @@ from memory.database import (
     save_conversation,
     list_conversations,
 )
-from config.settings import OUTPUT_DIR
+from config.settings import OUTPUT_DIR, MAX_CONTEXT_CHARS
 from utils.helpers import now_iso
 
 
-# ---------------------------------------------------------
-# Groq client
-# ---------------------------------------------------------
+# ============================================================
+# Helpers
+# ============================================================
 
-def get_followup_client():
+def _to_dict(row):
     """
-    Create a direct Groq client for lightweight follow-up questions.
+    Convert sqlite3.Row / dictionary-like objects into a normal
+    Python dictionary.
 
-    IMPORTANT:
-    Follow-up questions intentionally do NOT call the full
-    9-agent CrewAI workflow. This keeps token usage low.
+    This prevents errors such as:
+    AttributeError: 'sqlite3.Row' object has no attribute 'get'
     """
+    if row is None:
+        return {}
 
-    api_key = os.getenv("GROQ_API_KEY")
+    if isinstance(row, dict):
+        return row
+
+    try:
+        return dict(row)
+    except Exception:
+        return {
+            key: row[key]
+            for key in row.keys()
+        }
+
+
+def _compact_text(value, limit):
+    text = str(value or "").strip()
+
+    if len(text) <= limit:
+        return text
+
+    return text[:limit].rstrip() + "\n...[content shortened]..."
+
+
+def _get_groq_client():
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
 
     if not api_key:
         raise RuntimeError(
-            "GROQ_API_KEY is missing. "
-            "Please add GROQ_API_KEY to Streamlit Secrets."
+            "GROQ_API_KEY is not configured. "
+            "Add the API key to Streamlit Secrets."
         )
 
     return Groq(api_key=api_key)
 
 
-# ---------------------------------------------------------
-# Text limits
-# ---------------------------------------------------------
-
-def compact_text(text, max_chars):
+def _call_followup_model(prompt):
     """
-    Keep prompts small so follow-up questions do not consume
-    unnecessary TPM.
+    Lightweight follow-up call.
+
+    IMPORTANT:
+    This does NOT run the CrewAI 9-agent workflow again.
+    It makes only one direct Groq request.
     """
 
-    text = str(text or "").strip()
+    client = _get_groq_client()
 
-    if len(text) <= max_chars:
-        return text
+    last_error = None
 
-    return (
-        text[:max_chars]
-        + "\n\n[Previous content shortened to reduce token usage.]"
-    )
+    for attempt in range(2):
+        try:
+            response = client.chat.completions.create(
+                model="openai/gpt-oss-120b",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are the Enterprise DecisionOps executive "
+                            "follow-up analyst. Answer the user's follow-up "
+                            "question using only the supplied decision context. "
+                            "Do not invent company facts. Clearly distinguish "
+                            "known facts, assumptions, and evidence gaps. "
+                            "Be concise and executive-friendly."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    },
+                ],
+                max_completion_tokens=500,
+                reasoning_effort="low",
+                include_reasoning=False,
+            )
+
+            content = response.choices[0].message.content
+
+            if content and content.strip():
+                return content.strip()
+
+            raise RuntimeError("The follow-up model returned an empty response.")
+
+        except Exception as exc:
+            last_error = exc
+
+            error_text = str(exc).lower()
+
+            rate_limited = (
+                "rate limit" in error_text
+                or "tpm" in error_text
+                or "tokens per minute" in error_text
+                or "429" in error_text
+            )
+
+            if rate_limited and attempt == 0:
+                time.sleep(65)
+                continue
+
+            raise
+
+    raise last_error or RuntimeError("Follow-up analysis failed.")
 
 
-# ---------------------------------------------------------
-# Continue Decision UI
-# ---------------------------------------------------------
+# ============================================================
+# Main UI
+# ============================================================
 
 def render_continue_decision(row):
+    """
+    Render the lightweight Continue Decision experience.
+
+    This function accepts both:
+      - sqlite3.Row
+      - normal dict
+
+    Therefore it can safely be called from:
+      - Decision Room
+      - Decision History
+    """
+
+    # --------------------------------------------------------
+    # IMPORTANT FIX:
+    # sqlite3.Row does not provide .get()
+    # Convert it to a normal dictionary first.
+    # --------------------------------------------------------
+
+    row = _to_dict(row)
+
+    decision_id = row.get("decision_id", "")
+    decision_title = _compact_text(
+        row.get("title", "Enterprise Decision"),
+        300,
+    )
+
+    objective = _compact_text(
+        row.get("objective", ""),
+        2500,
+    )
+
+    constraints = _compact_text(
+        row.get("constraints", ""),
+        2200,
+    )
+
+    report = _compact_text(
+        row.get("report", ""),
+        4500,
+    )
+
+    # --------------------------------------------------------
+    # Header
+    # --------------------------------------------------------
 
     st.markdown("### Continue Decision")
 
     st.caption(
-        "Ask a follow-up question about this completed decision. "
-        "Follow-up analysis uses a lightweight single-model request "
-        "instead of restarting the full multi-agent workflow."
+        "Ask a follow-up question about this decision without "
+        "re-running the complete multi-agent workflow."
     )
 
-    # -----------------------------------------------------
-    # Previous follow-up messages
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Previous conversation
+    # --------------------------------------------------------
 
-    previous_turns = list_conversations(row["decision_id"])
+    previous_turns = list_conversations(decision_id)
 
     if previous_turns:
-        st.caption(
-            f"Previous follow-up messages: {len(previous_turns)}"
+        st.markdown(
+            f"**Previous follow-up messages:** {len(previous_turns)}"
         )
 
-    # -----------------------------------------------------
-    # Follow-up question
-    # -----------------------------------------------------
+        with st.expander("View previous follow-up conversation", expanded=False):
+            for turn in previous_turns:
+                speaker = str(turn["speaker"]).strip().lower()
+                message = turn["message"] or ""
+
+                if speaker == "executive":
+                    st.markdown("**Executive / User**")
+                    st.markdown(message)
+
+                elif speaker == "system":
+                    st.markdown("**DecisionOps Analysis**")
+                    st.markdown(message)
+
+                else:
+                    st.markdown(f"**{turn['speaker']}**")
+                    st.markdown(message)
+
+                st.divider()
+
+    # --------------------------------------------------------
+    # Decision context
+    # --------------------------------------------------------
+
+    with st.expander("Decision Context", expanded=False):
+        st.markdown(f"**Decision:** {decision_title}")
+
+        if objective:
+            st.markdown("**Objective**")
+            st.markdown(objective)
+
+        if constraints:
+            st.markdown("**Constraints**")
+            st.markdown(constraints)
+
+    # --------------------------------------------------------
+    # Follow-up input
+    # --------------------------------------------------------
 
     question = st.text_area(
         "Follow-up question or instruction",
-        height=120,
+        height=110,
         placeholder=(
             "Example: What happens if the initial investment "
-            "increases from PKR 50 million to PKR 60 million?"
+            "increases by 20%?"
         ),
-        key=f"followup_{row['decision_id']}",
+        key=f"followup_{decision_id}",
     )
 
-    # -----------------------------------------------------
-    # Start button
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Continue button
+    # --------------------------------------------------------
 
     if not st.button(
         "▶ Continue Analysis",
-        key=f"continue_{row['decision_id']}",
+        key=f"continue_{decision_id}",
         use_container_width=True,
     ):
         return
 
-    # -----------------------------------------------------
-    # Validate question
-    # -----------------------------------------------------
-
     if not question.strip():
-        st.warning("Please enter a follow-up question first.")
+        st.warning("Enter a follow-up question first.")
         return
 
-    # -----------------------------------------------------
-    # Prepare compact decision context
-    # -----------------------------------------------------
-
-    decision_title = compact_text(
-        row.get("title", "Enterprise Decision"),
-        500,
-    )
-
-    objective = compact_text(
-        row.get("objective", ""),
-        1800,
-    )
-
-    constraints = compact_text(
-        row.get("constraints", "Not specified"),
-        1800,
-    )
-
-    previous_report = compact_text(
-        row.get("report", ""),
-        5000,
-    )
-
-    followup_question = compact_text(
-        question,
-        1800,
-    )
-
-    # -----------------------------------------------------
-    # Build lightweight follow-up prompt
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Build compact follow-up prompt
+    # --------------------------------------------------------
 
     prompt = f"""
-You are continuing an existing enterprise decision analysis.
+Existing Enterprise Decision
 
-Do NOT restart the full multi-agent workflow.
-
-Answer ONLY the follow-up question using the existing decision
-context provided below.
-
-DECISION:
+Decision Title:
 {decision_title}
 
-ORIGINAL OBJECTIVE:
+Original Objective:
 {objective}
 
-ORIGINAL CONSTRAINTS:
-{constraints}
+Original Constraints:
+{constraints or "Not specified"}
 
-PREVIOUS EXECUTIVE BRIEF:
-{previous_report}
+Existing Executive Decision Brief:
+{report or "No previous executive brief is available."}
 
-FOLLOW-UP QUESTION:
-{followup_question}
+Follow-up Question:
+{question.strip()}
 
-INSTRUCTIONS:
-
-1. Answer the follow-up question directly.
-2. Use only the information available in the decision context.
-3. Do not invent company facts.
-4. Do not invent company policies.
-5. Do not invent prices, suppliers, financial results, regulations,
-   property details, or other unavailable facts.
-6. Clearly identify assumptions.
-7. Clearly identify evidence gaps when information is missing.
-8. Perform simple calculations when the required numbers are available.
-9. Keep the answer concise and executive-friendly.
-10. Do not provide hidden reasoning or chain-of-thought.
-11. Do not restart the original 9-agent decision process.
+Instructions:
+- Answer the follow-up question directly.
+- Use the existing decision context.
+- Do not invent company-specific facts.
+- Clearly distinguish confirmed information from assumptions.
+- Identify an evidence gap if the answer requires unavailable information.
+- Keep the response concise and suitable for an executive decision-maker.
 """
 
-    # -----------------------------------------------------
-    # Save user's follow-up question
-    # -----------------------------------------------------
+    prompt = _compact_text(
+        prompt,
+        MAX_CONTEXT_CHARS * 3,
+    )
+
+    # --------------------------------------------------------
+    # Save user's question
+    # --------------------------------------------------------
 
     save_conversation(
-        row["decision_id"],
+        decision_id,
         "executive",
-        followup_question,
+        question.strip(),
         now_iso(),
     )
 
-    # -----------------------------------------------------
-    # Mark decision as analyzing
-    # -----------------------------------------------------
-
     update_decision_status(
-        row["decision_id"],
+        decision_id,
         status="Analyzing",
-        executive_status="Pending Executive Review",
         error_message="",
+        executive_status="Pending Executive Review",
     )
 
-    st.info(
-        "Running lightweight follow-up analysis using "
-        "one GPT-OSS 120B request..."
-    )
+    # --------------------------------------------------------
+    # Execute lightweight follow-up
+    # --------------------------------------------------------
 
-    # -----------------------------------------------------
-    # Call Groq
-    # -----------------------------------------------------
+    with st.spinner("DecisionOps is analyzing the follow-up question..."):
 
-    try:
+        try:
+            answer = _call_followup_model(prompt)
 
-        client = get_followup_client()
+            # ------------------------------------------------
+            # Save AI response
+            # ------------------------------------------------
 
-        response = None
-        last_error = None
-
-        # -------------------------------------------------
-        # Maximum TWO attempts
-        # -------------------------------------------------
-
-        for attempt in range(2):
-
-            try:
-
-                response = client.chat.completions.create(
-                    model="openai/gpt-oss-120b",
-
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": prompt,
-                        }
-                    ],
-
-                    temperature=0.2,
-
-                    # Keep follow-up answers short.
-                    max_completion_tokens=500,
-
-                    # Reduce reasoning-token consumption.
-                    reasoning_effort="low",
-
-                    # Do not request visible reasoning.
-                    include_reasoning=False,
-                )
-
-                break
-
-            except Exception as exc:
-
-                last_error = exc
-
-                error_text = str(exc).lower()
-
-                rate_limit_error = (
-                    "rate limit" in error_text
-                    or "429" in error_text
-                    or "tpm" in error_text
-                    or "too many requests" in error_text
-                    or "tokens per minute" in error_text
-                )
-
-                # -----------------------------------------
-                # If TPM limit is reached, wait once
-                # -----------------------------------------
-
-                if rate_limit_error and attempt == 0:
-
-                    st.warning(
-                        "The Groq token-per-minute limit was reached. "
-                        "Waiting before retrying the follow-up request..."
-                    )
-
-                    # Give the TPM window time to recover.
-                    time.sleep(65)
-
-                else:
-                    raise
-
-        # -------------------------------------------------
-        # Verify response
-        # -------------------------------------------------
-
-        if response is None:
-
-            raise RuntimeError(
-                f"Groq follow-up request failed: {last_error}"
+            save_conversation(
+                decision_id,
+                "system",
+                answer,
+                now_iso(),
             )
 
-        # -------------------------------------------------
-        # Extract answer
-        # -------------------------------------------------
+            # ------------------------------------------------
+            # Preserve the original executive report.
+            # Add the follow-up as a separate section.
+            # ------------------------------------------------
 
-        answer = ""
+            existing_report = row.get("report", "") or ""
 
-        if response.choices:
-
-            message = response.choices[0].message
-
-            answer = getattr(
-                message,
-                "content",
-                "",
-            ) or ""
-
-        answer = answer.strip()
-
-        # -------------------------------------------------
-        # Empty-response protection
-        # -------------------------------------------------
-
-        if not answer:
-
-            raise RuntimeError(
-                "Groq returned an empty response for the "
-                "follow-up question."
+            followup_section = (
+                "\n\n"
+                "## Follow-up Analysis\n\n"
+                f"**Question:** {question.strip()}\n\n"
+                f"{answer}\n"
             )
 
-        # -------------------------------------------------
-        # Keep original executive report
-        # -------------------------------------------------
+            updated_report = existing_report + followup_section
 
-        existing_report = (
-            row.get("report") or ""
-        ).strip()
+            # ------------------------------------------------
+            # Save updated report
+            # ------------------------------------------------
 
-        # -------------------------------------------------
-        # Append follow-up analysis
-        # -------------------------------------------------
+            update_decision_status(
+                decision_id,
+                status="Completed",
+                report=updated_report,
+                error_message="",
+                executive_status="Pending Executive Review",
+            )
 
-        updated_report = (
-            existing_report
-            + "\n\n"
-            + "=" * 70
-            + "\n"
-            + "FOLLOW-UP ANALYSIS"
-            + "\n"
-            + "=" * 70
-            + "\n\n"
-            + "Question:\n"
-            + followup_question
-            + "\n\n"
-            + "Analysis:\n"
-            + answer
-            + "\n"
-        )
+            output_path = OUTPUT_DIR / f"{decision_id}.md"
+            output_path.write_text(
+                updated_report,
+                encoding="utf-8",
+            )
 
-        # -------------------------------------------------
-        # Save updated decision
-        # -------------------------------------------------
+            # ------------------------------------------------
+            # Display result
+            # ------------------------------------------------
 
-        update_decision_status(
-            row["decision_id"],
-            status="Completed",
-            report=updated_report,
-            executive_status="Pending Executive Review",
-            error_message="",
-        )
+            st.success("Follow-up analysis completed.")
 
-        # -------------------------------------------------
-        # Save report file
-        # -------------------------------------------------
+            st.markdown("### Follow-up Analysis")
 
-        OUTPUT_DIR.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+            st.markdown(
+                """
+                <div style="
+                    border:1px solid #dbeafe;
+                    background:#f8fbff;
+                    border-radius:14px;
+                    padding:18px;
+                    margin-top:8px;
+                    margin-bottom:16px;
+                ">
+                """,
+                unsafe_allow_html=True,
+            )
 
-        report_path = (
-            OUTPUT_DIR
-            / f"{row['decision_id']}.md"
-        )
+            st.markdown(answer)
 
-        report_path.write_text(
-            updated_report,
-            encoding="utf-8",
-        )
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        # -------------------------------------------------
-        # Save assistant response
-        # -------------------------------------------------
+            st.caption(
+                "This follow-up used the existing decision context "
+                "and did not re-run the full 9-agent analysis."
+            )
 
-        save_conversation(
-            row["decision_id"],
-            "system",
-            answer,
-            now_iso(),
-        )
+        except Exception as exc:
 
-        # -------------------------------------------------
-        # Display result
-        # -------------------------------------------------
+            error_text = str(exc)
 
-        st.success(
-            "Follow-up analysis completed successfully."
-        )
+            update_decision_status(
+                decision_id,
+                status="Failed",
+                error_message=error_text,
+                executive_status="Pending Executive Review",
+            )
 
-        st.markdown("### Follow-up Result")
+            st.error("The follow-up analysis failed.")
 
-        st.markdown(answer)
-
-        # -------------------------------------------------
-        # Refresh application
-        # -------------------------------------------------
-
-        st.rerun()
-
-    # -----------------------------------------------------
-    # Error handling
-    # -----------------------------------------------------
-
-    except Exception as exc:
-
-        error_message = str(exc)
-
-        update_decision_status(
-            row["decision_id"],
-            status="Failed",
-            error_message=error_message,
-            executive_status="Pending Executive Review",
-        )
-
-        st.error(
-            "The follow-up analysis failed."
-        )
-
-        st.code(
-            error_message,
-            language="text",
-        )
+            st.code(
+                error_text,
+                language="text",
+            )
