@@ -3,6 +3,7 @@ import pandas as pd
 from memory.decision_memory import list_decisions, get_decision, update_decision_status
 from config.settings import OUTPUT_DIR
 from ui.continuation import render_continue_decision
+from ui.report_renderer import render_report_with_tables, render_status_card
 
 
 def _ai_status(status):
@@ -25,11 +26,12 @@ def _report_bytes(row):
 def render_dashboard():
     rows = list_decisions()
     completed = sum(r["status"] == "Completed" for r in rows)
-    running = sum(r["status"] == "Analyzing" for r in rows)
-    failed = sum(r["status"] == "Failed" for r in rows)
-    pending = sum(_exec_status(r) == "Pending Executive Review" and r["status"] == "Completed" for r in rows)
+    pending = sum(
+        _exec_status(r) == "Pending Executive Review"
+        and r["status"] == "Completed"
+        for r in rows
+    )
     approved = sum(_exec_status(r) == "Approved by Executive" for r in rows)
-    rejected = sum(_exec_status(r) == "Rejected by Executive" for r in rows)
 
     st.markdown("## Executive Dashboard")
     st.caption("Decision portfolio and executive review.")
@@ -52,14 +54,21 @@ def render_dashboard():
             "AI Analysis": _ai_status(r["status"]),
             "Executive Status": _exec_status(r),
             "Created": r["created_at"],
-        } for r in rows[:30]
+        }
+        for r in rows[:30]
     ])
     st.dataframe(table, use_container_width=True, hide_index=True)
 
     labels = [f"{r['decision_id']} — {r['title']}" for r in rows]
-    mapping = {f"{r['decision_id']} — {r['title']}": r['decision_id'] for r in rows}
+    mapping = {
+        f"{r['decision_id']} — {r['title']}": r['decision_id']
+        for r in rows
+    }
     selected_label = st.selectbox(
-        "Select a decision to review", labels, index=None, placeholder="Nothing selected"
+        "Select a decision to review",
+        labels,
+        index=None,
+        placeholder="Nothing selected",
     )
     if not selected_label:
         st.caption("Select a decision to review to access its report or executive status actions.")
@@ -77,7 +86,7 @@ def render_dashboard():
 
     if action == "Change Executive Decision Status":
         current = _exec_status(row)
-        st.info(f"Current Executive Status: **{current}**")
+        render_status_card(current)
         c1, c2, c3 = st.columns(3)
         with c1:
             if st.button("⏳ Keep Pending Review", key=f"pending_{selected_id}", use_container_width=True):
@@ -103,26 +112,45 @@ def render_dashboard():
         return
 
     st.markdown(f"### {row['title']}")
-    st.caption(f"{row['decision_id']} · AI Analysis: {_ai_status(row['status'])} · Executive: {_exec_status(row)}")
-    tabs = st.tabs(["Executive Brief", "Agent Findings", "Continue Decision", "Download Report"])
+    st.caption(
+        f"{row['decision_id']} · AI Analysis: {_ai_status(row['status'])}"
+    )
+    render_status_card(_exec_status(row))
+
+    tabs = st.tabs([
+        "Executive Brief",
+        "Agent Findings",
+        "Continue Decision",
+        "Download Report",
+    ])
+
     with tabs[0]:
-        st.markdown(row["report"] or "No report was saved.")
+        render_report_with_tables(row["report"] or "No report was saved.")
+
     with tabs[1]:
         if not findings:
             st.warning("No individual findings were saved.")
         for f in findings:
             with st.expander(f["agent_name"], expanded=False):
-                st.write(f["finding"] or "No finding returned.")
+                st.markdown(f["finding"] or "No finding returned.")
+
     with tabs[2]:
         render_continue_decision(row)
+
     with tabs[3]:
         st.download_button(
             "⬇️ Download Executive Decision Brief",
             data=_report_bytes(row),
             file_name=f"{row['decision_id']}_Executive_Decision_Brief.md",
-            mime="text/markdown", use_container_width=True,
+            mime="text/markdown",
+            use_container_width=True,
         )
-    if st.button("🔎 Open full Decision Room", key=f"room_{selected_id}", use_container_width=True):
+
+    if st.button(
+        "🔎 Open full Decision Room",
+        key=f"room_{selected_id}",
+        use_container_width=True,
+    ):
         st.session_state["selected_decision"] = selected_id
         st.session_state["workspace_page"] = "Decision Room"
         st.rerun()
